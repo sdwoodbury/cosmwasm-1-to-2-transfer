@@ -27,6 +27,11 @@ pub fn instantiate(
         owner: info.sender.clone(),
         send_fee: msg.send_fee,
     };
+    if !info.funds.is_empty() {
+        return Err(ContractError::CustomError {
+            val: "the creator shouldn't send money to this contract".into(),
+        });
+    }
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     STATE.save(deps.storage, &state)?;
     let owner_balance = Uint128::from(0u32);
@@ -89,10 +94,7 @@ pub fn execute_transfer(
     // ensure balance (minus the transfer fee) is even (instructions say to divide money evenly. requires an even number) and nonzero
     if funds <= state.send_fee {
         return Err(ContractError::CustomError {
-            val: format!(
-                "not enough funds. please send an even number of usei + a fee of {}",
-                state.send_fee
-            ),
+            val: "funds <= fee".into(),
         });
     }
 
@@ -102,7 +104,7 @@ pub fn execute_transfer(
     if to_send % Uint128::from(2u32) != Uint128::from(0u32) {
         return Err(ContractError::CustomError {
             val: format!(
-                "not enough funds. please send an even number of usei + a fee of {}",
+                "invalid funds. please send an even number of usei + a fee of {}",
                 state.send_fee
             ),
         });
@@ -156,8 +158,8 @@ pub fn execute_transfer(
     // emit event
     Ok(Response::new()
         .add_attribute("action", "transfer")
-        .add_attribute("recipientA", half)
-        .add_attribute("recipientB", half))
+        .add_attribute("recipient_a", half)
+        .add_attribute("recipient_b", half))
 }
 
 pub fn execute_withdraw(
@@ -165,6 +167,11 @@ pub fn execute_withdraw(
     info: MessageInfo,
     amount: Uint128,
 ) -> Result<Response, ContractError> {
+    if !info.funds.is_empty() {
+        return Err(ContractError::CustomError {
+            val: "no funds required".into(),
+        });
+    }
     // ensure account exists
     if !BALANCES.has(deps.storage, info.sender.clone()) {
         return Err(ContractError::Unauthorized {});
@@ -228,69 +235,281 @@ fn query_balance(deps: Deps, account: &str) -> StdResult<GetBalanceResponse> {
 mod tests {
     use super::*;
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::{coins, from_binary};
+    use cosmwasm_std::{coin, coins, from_binary};
 
-    /*#[test]
+    #[test]
     fn proper_initialization() {
         let mut deps = mock_dependencies();
 
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(1000, "earth"));
+        let msg = InstantiateMsg {
+            send_fee: Uint128::from(1u32),
+        };
 
-        // we can just call .unwrap() to assert this was a success
-        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-        assert_eq!(0, res.messages.len());
+        // negative path - initializing the contract with money
+        let info = mock_info("creator", &coins(1000, "usei"));
+        let res = instantiate(deps.as_mut(), mock_env(), info, msg.clone());
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ContractError::CustomError { val } => assert!(val.contains("shouldn't send")),
+            _ => assert!(false),
+        };
 
-        // it worked, let's query the state
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: GetCountResponse = from_binary(&res).unwrap();
-        assert_eq!(17, value.count);
+        let info = mock_info("creator", &[]);
+        instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+        // check owner
+        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetOwner {}).unwrap();
+        let value: GetOwnerResponse = from_binary(&res).unwrap();
+        assert_eq!("creator", value.owner);
+
+        // check send_fee
+        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetSendFee {}).unwrap();
+        let value: GetSendFeeResponse = from_binary(&res).unwrap();
+        assert_eq!(Uint128::from(1u32), value.fee);
+
+        // check balance
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::GetBalance {
+                account: "creator".into(),
+            },
+        )
+        .unwrap();
+        let value: GetBalanceResponse = from_binary(&res).unwrap();
+        assert_eq!(Uint128::from(0u32), value.balance);
+
+        // check balance of nonexistent account
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::GetBalance {
+                account: "random".into(),
+            },
+        )
+        .unwrap();
+        let value: GetBalanceResponse = from_binary(&res).unwrap();
+        assert_eq!(Uint128::from(0u32), value.balance);
     }
 
     #[test]
-    fn increment() {
+    fn send_coins_negative_path() {
+        // init the contract
         let mut deps = mock_dependencies();
+        let msg = InstantiateMsg {
+            send_fee: Uint128::from(1u32),
+        };
+        let info = mock_info("creator", &[]);
+        instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
 
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(2, "token"));
-        let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+        // negative path: send the wrong type of coin
+        let info = mock_info("sender_a", &coins(1, "BTC"));
+        let res = execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_b");
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ContractError::CustomError { val } => assert!(val.contains("invalid denomination")),
+            _ => assert!(false),
+        };
 
-        // beneficiary can release it
-        let info = mock_info("anyone", &coins(2, "token"));
-        let msg = ExecuteMsg::Increment {};
-        let _res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
+        // negative path: send multiple types of coin
+        let to_send = vec![coin(1, "usei"), coin(1, "usei")];
+        let info = mock_info("sender_a", &to_send);
+        let res = execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_b");
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ContractError::CustomError { val } => assert!(val.as_str() == "please only send usei"),
+            _ => assert!(false),
+        };
 
-        // should increase counter by 1
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: GetCountResponse = from_binary(&res).unwrap();
-        assert_eq!(18, value.count);
+        // negative path: send no coins
+        let info = mock_info("sender_a", &[]);
+        let res = execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_b");
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ContractError::CustomError { val } => assert!(val.as_str() == "please send usei"),
+            _ => assert!(false),
+        };
+
+        // negative path: send the wrong number of coins (odd number greater than fee)
+        let info = mock_info("sender_a", &coins(4, "usei"));
+        let res = execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_b");
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ContractError::CustomError { val } => assert!(val.contains("invalid funds")),
+            _ => assert!(false),
+        };
+
+        // negative path: send the wrong number of coins (just send the fee)
+        let info = mock_info("sender_a", &coins(1, "usei"));
+        let res = execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_b");
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ContractError::CustomError { val } => assert!(val.contains("funds <= fee")),
+            _ => assert!(false),
+        };
+
+        // negative path: send the wrong number of coins (zero)
+        let info = mock_info("sender_a", &coins(0, "usei"));
+        let res = execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_b");
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ContractError::CustomError { val } => assert!(val.contains("funds <= fee")),
+            _ => assert!(false),
+        };
     }
 
     #[test]
-    fn reset() {
+    fn send_coins() {
+        // init the contract
         let mut deps = mock_dependencies();
+        let msg = InstantiateMsg {
+            send_fee: Uint128::from(1u32),
+        };
+        let info = mock_info("creator", &[]);
+        instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
 
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(2, "token"));
-        let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+        // send coins to the same address
+        let info = mock_info("sender_a", &coins(3, "usei"));
+        execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_a").unwrap();
 
-        // beneficiary can release it
-        let unauth_info = mock_info("anyone", &coins(2, "token"));
-        let msg = ExecuteMsg::Reset { count: 5 };
-        let res = execute(deps.as_mut(), mock_env(), unauth_info, msg);
-        match res {
-            Err(ContractError::Unauthorized {}) => {}
-            _ => panic!("Must return unauthorized error"),
-        }
+        // send coins to different addresses
+        let info = mock_info("sender_a", &coins(7, "usei"));
+        execute_transfer(deps.as_mut(), info, "recipient_b", "recipient_c").unwrap();
 
-        // only the original creator can reset the counter
-        let auth_info = mock_info("creator", &coins(2, "token"));
-        let msg = ExecuteMsg::Reset { count: 5 };
-        let _res = execute(deps.as_mut(), mock_env(), auth_info, msg).unwrap();
+        // query balances of recipients
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::GetBalance {
+                account: "recipient_a".into(),
+            },
+        )
+        .unwrap();
+        let value: GetBalanceResponse = from_binary(&res).unwrap();
+        assert_eq!(Uint128::from(2u32), value.balance);
 
-        // should now be 5
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: GetCountResponse = from_binary(&res).unwrap();
-        assert_eq!(5, value.count);
-    } */
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::GetBalance {
+                account: "recipient_b".into(),
+            },
+        )
+        .unwrap();
+        let value: GetBalanceResponse = from_binary(&res).unwrap();
+        assert_eq!(Uint128::from(3u32), value.balance);
+
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::GetBalance {
+                account: "recipient_c".into(),
+            },
+        )
+        .unwrap();
+        let value: GetBalanceResponse = from_binary(&res).unwrap();
+        assert_eq!(Uint128::from(3u32), value.balance);
+
+        // query balance of owner
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::GetBalance {
+                account: "creator".into(),
+            },
+        )
+        .unwrap();
+        let value: GetBalanceResponse = from_binary(&res).unwrap();
+        assert_eq!(Uint128::from(2u32), value.balance);
+    }
+
+    #[test]
+    fn withdraw_coins() {
+        // init the contract
+        let mut deps = mock_dependencies();
+        let msg = InstantiateMsg {
+            send_fee: Uint128::from(1u32),
+        };
+        let info = mock_info("creator", &[]);
+        instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+        // send coins
+        let info = mock_info("sender_a", &coins(7, "usei"));
+        execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_b").unwrap();
+
+        // query balance
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::GetBalance {
+                account: "recipient_a".into(),
+            },
+        )
+        .unwrap();
+        let value: GetBalanceResponse = from_binary(&res).unwrap();
+        assert_eq!(Uint128::from(3u32), value.balance);
+
+        // withdraw using account not listed
+        let info = mock_info("random", &[]);
+        let res = execute_withdraw(deps.as_mut(), info, Uint128::from(1u32));
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ContractError::Unauthorized {} => {}
+            _ => assert!(false),
+        };
+
+        // withdraw too many
+        let info = mock_info("recipient_a", &[]);
+        let res = execute_withdraw(deps.as_mut(), info, Uint128::from(4u32));
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ContractError::CustomError { val } => assert!(val.contains("insufficient funds")),
+            _ => assert!(false),
+        };
+
+        // send money with withdrawal request
+        let info = mock_info("recipient_a", &coins(1, "usei"));
+        let res = execute_withdraw(deps.as_mut(), info, Uint128::from(4u32));
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            ContractError::CustomError { val } => assert!(val.contains("no funds required")),
+            _ => assert!(false),
+        };
+
+        // withdraw less than total
+        let info = mock_info("recipient_a", &[]);
+        execute_withdraw(deps.as_mut(), info, Uint128::from(2u32)).unwrap();
+
+        // query balance
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::GetBalance {
+                account: "recipient_a".into(),
+            },
+        )
+        .unwrap();
+        let value: GetBalanceResponse = from_binary(&res).unwrap();
+        assert_eq!(Uint128::from(1u32), value.balance);
+
+        // withdraw remaining
+        let info = mock_info("recipient_a", &[]);
+        execute_withdraw(deps.as_mut(), info, Uint128::from(1u32)).unwrap();
+
+        // query balance
+        let res = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::GetBalance {
+                account: "recipient_a".into(),
+            },
+        )
+        .unwrap();
+        let value: GetBalanceResponse = from_binary(&res).unwrap();
+        assert_eq!(Uint128::from(0u32), value.balance);
+
+        // owner withdraw
+        let info = mock_info("creator", &[]);
+        execute_withdraw(deps.as_mut(), info, Uint128::from(1u32)).unwrap();
+    }
 }
