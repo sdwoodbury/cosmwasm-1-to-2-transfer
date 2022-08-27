@@ -488,6 +488,9 @@ mod tests {
         let value: GetBalanceResponse = from_binary(&res).unwrap();
         assert_eq!(Uint128::from(1u32), value.balance);
 
+        // verify that recipient_a is within BALANCES, as this will be checked later
+        assert!(BALANCES.has(&deps.storage, Addr::unchecked("recipient_a")));
+
         // withdraw remaining
         let info = mock_info("recipient_a", &[]);
         let res = execute_withdraw(deps.as_mut(), info, Uint128::from(1u32)).unwrap();
