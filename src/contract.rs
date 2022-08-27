@@ -34,8 +34,6 @@ pub fn instantiate(
     }
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     STATE.save(deps.storage, &state)?;
-    let owner_balance = Uint128::from(0u32);
-    BALANCES.save(deps.storage, info.sender.clone(), &owner_balance)?;
 
     Ok(Response::new()
         .add_attribute("action", "instantiate")
@@ -132,9 +130,8 @@ pub fn execute_transfer(
                 }
             };
 
-            // delete empty balance unless the account is the owner
-            // keeping the owner balance simplifies the logic in execute_transfer => can always assume the account exists.
-            if new_balance == Uint128::from(0u32) && addr != state.owner {
+            // delete empty balance
+            if new_balance == Uint128::from(0u32) {
                 BALANCES.remove(deps.storage, addr);
             } else {
                 BALANCES.save(deps.storage, addr, &new_balance)?;
@@ -142,24 +139,17 @@ pub fn execute_transfer(
         }
     }
 
-    // update the owner balance
-    let owner_balance = BALANCES.load(deps.storage, state.owner.clone())?;
-    let new_owner_balance = match Uint128::checked_add(owner_balance, state.send_fee) {
-        Ok(r) => r,
-        Err(_) => {
-            // this is pretty crappy. would make the contract unusable until the owner withdraws funds
-            return Err(ContractError::CustomError {
-                val: "owner balance overflow occured".into(),
-            });
-        }
-    };
-    BALANCES.save(deps.storage, state.owner, &new_owner_balance)?;
-
-    // emit event
-    Ok(Response::new()
+    // send fee
+    let mut res = Response::new();
+    res = res
+        .add_message(BankMsg::Send {
+            to_address: state.owner.into(),
+            amount: coins(state.send_fee.u128(), "usei"),
+        })
         .add_attribute("action", "transfer")
         .add_attribute("recipient_a", half)
-        .add_attribute("recipient_b", half))
+        .add_attribute("recipient_b", half);
+    Ok(res)
 }
 
 pub fn execute_withdraw(
@@ -235,7 +225,7 @@ fn query_balance(deps: Deps, account: &str) -> StdResult<GetBalanceResponse> {
 mod tests {
     use super::*;
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::{coin, coins, from_binary};
+    use cosmwasm_std::{coin, coins, from_binary, CosmosMsg};
 
     #[test]
     fn proper_initialization() {
@@ -266,18 +256,6 @@ mod tests {
         let res = query(deps.as_ref(), mock_env(), QueryMsg::GetSendFee {}).unwrap();
         let value: GetSendFeeResponse = from_binary(&res).unwrap();
         assert_eq!(Uint128::from(1u32), value.fee);
-
-        // check balance
-        let res = query(
-            deps.as_ref(),
-            mock_env(),
-            QueryMsg::GetBalance {
-                account: "creator".into(),
-            },
-        )
-        .unwrap();
-        let value: GetBalanceResponse = from_binary(&res).unwrap();
-        assert_eq!(Uint128::from(0u32), value.balance);
 
         // check balance of nonexistent account
         let res = query(
@@ -331,6 +309,7 @@ mod tests {
         };
 
         // negative path: send the wrong number of coins (odd number greater than fee)
+        // 4 - fee (1) = 3, which is not divisible by 2
         let info = mock_info("sender_a", &coins(4, "usei"));
         let res = execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_b");
         assert!(res.is_err());
@@ -370,11 +349,29 @@ mod tests {
 
         // send coins to the same address
         let info = mock_info("sender_a", &coins(3, "usei"));
-        execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_a").unwrap();
+        let res = execute_transfer(deps.as_mut(), info, "recipient_a", "recipient_a").unwrap();
+        // verify the creator was paid
+        assert!(res.messages.len() == 1);
+        assert_eq!(
+            res.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: "creator".into(),
+                amount: coins(1, "usei"),
+            })
+        );
 
         // send coins to different addresses
         let info = mock_info("sender_a", &coins(7, "usei"));
-        execute_transfer(deps.as_mut(), info, "recipient_b", "recipient_c").unwrap();
+        let res = execute_transfer(deps.as_mut(), info, "recipient_b", "recipient_c").unwrap();
+        // verify the creator was paid
+        assert!(res.messages.len() == 1);
+        assert_eq!(
+            res.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: "creator".into(),
+                amount: coins(1, "usei"),
+            })
+        );
 
         // query balances of recipients
         let res = query(
@@ -409,18 +406,6 @@ mod tests {
         .unwrap();
         let value: GetBalanceResponse = from_binary(&res).unwrap();
         assert_eq!(Uint128::from(3u32), value.balance);
-
-        // query balance of owner
-        let res = query(
-            deps.as_ref(),
-            mock_env(),
-            QueryMsg::GetBalance {
-                account: "creator".into(),
-            },
-        )
-        .unwrap();
-        let value: GetBalanceResponse = from_binary(&res).unwrap();
-        assert_eq!(Uint128::from(2u32), value.balance);
     }
 
     #[test]
@@ -478,7 +463,17 @@ mod tests {
 
         // withdraw less than total
         let info = mock_info("recipient_a", &[]);
-        execute_withdraw(deps.as_mut(), info, Uint128::from(2u32)).unwrap();
+        let res = execute_withdraw(deps.as_mut(), info, Uint128::from(2u32)).unwrap();
+
+        // verify the recipient was paid
+        assert!(res.messages.len() == 1);
+        assert_eq!(
+            res.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: "recipient_a".into(),
+                amount: coins(2, "usei"),
+            })
+        );
 
         // query balance
         let res = query(
@@ -494,7 +489,17 @@ mod tests {
 
         // withdraw remaining
         let info = mock_info("recipient_a", &[]);
-        execute_withdraw(deps.as_mut(), info, Uint128::from(1u32)).unwrap();
+        let res = execute_withdraw(deps.as_mut(), info, Uint128::from(1u32)).unwrap();
+
+        // verify the recipient was paid
+        assert!(res.messages.len() == 1);
+        assert_eq!(
+            res.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: "recipient_a".into(),
+                amount: coins(1, "usei"),
+            })
+        );
 
         // query balance
         let res = query(
@@ -507,9 +512,5 @@ mod tests {
         .unwrap();
         let value: GetBalanceResponse = from_binary(&res).unwrap();
         assert_eq!(Uint128::from(0u32), value.balance);
-
-        // owner withdraw
-        let info = mock_info("creator", &[]);
-        execute_withdraw(deps.as_mut(), info, Uint128::from(1u32)).unwrap();
     }
 }
