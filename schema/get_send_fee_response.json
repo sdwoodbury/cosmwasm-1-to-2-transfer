@@ -1,18 +1,13 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "InstantiateMsg",
+  "title": "GetSendFeeResponse",
   "type": "object",
   "required": [
-    "send_fee"
+    "fee"
   ],
   "properties": {
-    "send_fee": {
-      "description": "units are in usei",
-      "allOf": [
-        {
-          "$ref": "#/definitions/Uint128"
-        }
-      ]
+    "fee": {
+      "$ref": "#/definitions/Uint128"
     }
   },
   "definitions": {

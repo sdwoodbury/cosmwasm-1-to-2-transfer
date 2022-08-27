@@ -3,13 +3,48 @@
   "title": "QueryMsg",
   "oneOf": [
     {
+      "description": "view the contract owner",
       "type": "object",
       "required": [
-        "get_count"
+        "get_owner"
       ],
       "properties": {
-        "get_count": {
+        "get_owner": {
           "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "view the fee incurred by the Transfer transaction",
+      "type": "object",
+      "required": [
+        "get_send_fee"
+      ],
+      "properties": {
+        "get_send_fee": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "view the balance for an account.",
+      "type": "object",
+      "required": [
+        "get_balance"
+      ],
+      "properties": {
+        "get_balance": {
+          "type": "object",
+          "required": [
+            "account"
+          ],
+          "properties": {
+            "account": {
+              "type": "string"
+            }
+          }
         }
       },
       "additionalProperties": false
