@@ -130,12 +130,7 @@ pub fn execute_transfer(
                 }
             };
 
-            // delete empty balance
-            if new_balance == Uint128::from(0u32) {
-                BALANCES.remove(deps.storage, addr);
-            } else {
-                BALANCES.save(deps.storage, addr, &new_balance)?;
-            }
+            BALANCES.save(deps.storage, addr, &new_balance)?;
         }
     }
 
@@ -176,7 +171,13 @@ pub fn execute_withdraw(
 
     // deduct balance
     let new_balance = balance - amount;
-    BALANCES.save(deps.storage, info.sender.clone(), &new_balance)?;
+
+    // delete empty balance
+    if new_balance == Uint128::from(0u32) {
+        BALANCES.remove(deps.storage, info.sender.clone());
+    } else {
+        BALANCES.save(deps.storage, info.sender.clone(), &new_balance)?;
+    }
 
     // send coins
     let mut res = Response::new();
@@ -225,7 +226,7 @@ fn query_balance(deps: Deps, account: &str) -> StdResult<GetBalanceResponse> {
 mod tests {
     use super::*;
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::{coin, coins, from_binary, CosmosMsg};
+    use cosmwasm_std::{coin, coins, from_binary, Addr, CosmosMsg};
 
     #[test]
     fn proper_initialization() {
@@ -512,5 +513,8 @@ mod tests {
         .unwrap();
         let value: GetBalanceResponse = from_binary(&res).unwrap();
         assert_eq!(Uint128::from(0u32), value.balance);
+
+        // ensure BALANCES doesn't contain recipeint_a anymore
+        assert!(!BALANCES.has(&deps.storage, Addr::unchecked("recipient_a")));
     }
 }
